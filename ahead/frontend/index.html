@@ -1,0 +1,895 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Ahead — Predictive Signal Preemption</title>
+
+  <!-- Leaflet CSS -->
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <!-- Socket.IO -->
+  <script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
+  <!-- Leaflet JS -->
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+
+  <style>
+    /* ── Reset & base ── */
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg: #0d1117;
+      --panel: #161b22;
+      --border: #30363d;
+      --text: #e6edf3;
+      --muted: #8b949e;
+      --accent: #58a6ff;
+      --green: #00E676;
+      --yellow: #FFEA00;
+      --red: #FF5252;
+      --grey: #9E9E9E;
+      --blue: #00B0FF;
+      --success: #3fb950;
+    }
+
+    html, body {
+      height: 100%;
+      background: var(--bg);
+      color: var(--text);
+      font-family: 'SF Pro Display', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      overflow: hidden;
+    }
+
+    /* ── Layout ── */
+    #app {
+      display: flex;
+      height: 100vh;
+      width: 100vw;
+    }
+
+    #map-container {
+      flex: 1;
+      position: relative;
+    }
+
+    #map {
+      width: 100%;
+      height: 100%;
+    }
+
+    /* Map overlay badge */
+    #map-badge {
+      position: absolute;
+      top: 16px;
+      left: 50%;
+      transform: translateX(-50%);
+      background: rgba(13,17,23,0.85);
+      border: 1px solid var(--border);
+      backdrop-filter: blur(12px);
+      border-radius: 24px;
+      padding: 6px 18px;
+      font-size: 13px;
+      color: var(--muted);
+      z-index: 1000;
+      pointer-events: none;
+      letter-spacing: 0.04em;
+    }
+
+    /* ── Side panel ── */
+    #panel {
+      width: 320px;
+      min-width: 320px;
+      background: var(--panel);
+      border-left: 1px solid var(--border);
+      display: flex;
+      flex-direction: column;
+      padding: 24px 20px;
+      gap: 20px;
+      overflow-y: auto;
+    }
+
+    /* Logo / header */
+    .logo {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+
+    .logo-icon {
+      width: 36px;
+      height: 36px;
+      background: linear-gradient(135deg, var(--accent), var(--green));
+      border-radius: 10px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 18px;
+    }
+
+    .logo-text h1 {
+      font-size: 22px;
+      font-weight: 700;
+      letter-spacing: -0.5px;
+      color: var(--text);
+    }
+
+    .logo-text p {
+      font-size: 11px;
+      color: var(--muted);
+      letter-spacing: 0.05em;
+      text-transform: uppercase;
+    }
+
+    /* Divider */
+    .divider {
+      height: 1px;
+      background: var(--border);
+    }
+
+    /* Route info */
+    .route-info {
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+
+    .route-stop {
+      display: flex;
+      align-items: flex-start;
+      gap: 12px;
+    }
+
+    .stop-dot {
+      width: 10px;
+      height: 10px;
+      border-radius: 50%;
+      margin-top: 3px;
+      flex-shrink: 0;
+    }
+
+    .stop-dot.origin { background: var(--green); }
+    .stop-dot.dest   { background: var(--red); }
+
+    .stop-label {
+      font-size: 11px;
+      color: var(--muted);
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+    }
+
+    .stop-name {
+      font-size: 14px;
+      font-weight: 600;
+      color: var(--text);
+    }
+
+    .route-connector {
+      width: 1px;
+      height: 16px;
+      background: var(--border);
+      margin-left: 4px;
+    }
+
+    /* Stats cards */
+    .stats-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 10px;
+    }
+
+    .stat-card {
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 14px 12px;
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+    }
+
+    .stat-label {
+      font-size: 10px;
+      color: var(--muted);
+      text-transform: uppercase;
+      letter-spacing: 0.07em;
+    }
+
+    .stat-value {
+      font-size: 26px;
+      font-weight: 700;
+      color: var(--text);
+      font-variant-numeric: tabular-nums;
+      transition: color 0.3s ease;
+    }
+
+    .stat-value.flash {
+      color: var(--green);
+    }
+
+    .stat-unit {
+      font-size: 11px;
+      color: var(--muted);
+    }
+
+    /* Progress bar */
+    .progress-wrap {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+
+    .progress-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+
+    .progress-title {
+      font-size: 11px;
+      color: var(--muted);
+      text-transform: uppercase;
+      letter-spacing: 0.07em;
+    }
+
+    .progress-pct {
+      font-size: 12px;
+      font-weight: 600;
+      color: var(--accent);
+    }
+
+    .progress-bar {
+      height: 6px;
+      background: var(--bg);
+      border-radius: 3px;
+      overflow: hidden;
+      border: 1px solid var(--border);
+    }
+
+    .progress-fill {
+      height: 100%;
+      background: linear-gradient(90deg, var(--accent), var(--green));
+      border-radius: 3px;
+      width: 0%;
+      transition: width 0.5s linear;
+    }
+
+    /* Legend */
+    .legend {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+
+    .legend-title {
+      font-size: 11px;
+      color: var(--muted);
+      text-transform: uppercase;
+      letter-spacing: 0.07em;
+      margin-bottom: 2px;
+    }
+
+    .legend-item {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+
+    .legend-dot {
+      width: 12px;
+      height: 12px;
+      border-radius: 50%;
+      flex-shrink: 0;
+    }
+
+    .legend-item-text {
+      font-size: 13px;
+      color: var(--text);
+    }
+
+    .legend-item-sub {
+      font-size: 11px;
+      color: var(--muted);
+      margin-left: auto;
+    }
+
+    /* Status pill */
+    #status-pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 7px;
+      padding: 7px 14px;
+      border-radius: 20px;
+      font-size: 12px;
+      font-weight: 600;
+      letter-spacing: 0.04em;
+      border: 1px solid var(--border);
+      background: var(--bg);
+      color: var(--muted);
+      transition: all 0.3s ease;
+    }
+
+    #status-pill.active {
+      background: rgba(0,230,118,0.1);
+      border-color: var(--green);
+      color: var(--green);
+    }
+
+    #status-pill.complete {
+      background: rgba(88,166,255,0.1);
+      border-color: var(--accent);
+      color: var(--accent);
+    }
+
+    .status-dot {
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      background: currentColor;
+    }
+
+    .status-dot.pulse {
+      animation: pulse-dot 1.2s ease-in-out infinite;
+    }
+
+    @keyframes pulse-dot {
+      0%, 100% { opacity: 1; transform: scale(1); }
+      50% { opacity: 0.5; transform: scale(0.7); }
+    }
+
+    /* Start button */
+    #start-btn {
+      width: 100%;
+      padding: 14px;
+      border-radius: 12px;
+      border: none;
+      background: linear-gradient(135deg, var(--accent), var(--green));
+      color: #000;
+      font-size: 15px;
+      font-weight: 700;
+      cursor: pointer;
+      letter-spacing: 0.02em;
+      transition: opacity 0.2s, transform 0.1s;
+    }
+
+    #start-btn:hover:not(:disabled) {
+      opacity: 0.9;
+      transform: translateY(-1px);
+    }
+
+    #start-btn:active:not(:disabled) {
+      transform: translateY(0);
+    }
+
+    #start-btn:disabled {
+      opacity: 0.45;
+      cursor: not-allowed;
+    }
+
+    #stop-btn {
+      width: 100%;
+      padding: 10px;
+      border-radius: 12px;
+      border: 1px solid var(--border);
+      background: transparent;
+      color: var(--muted);
+      font-size: 13px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: all 0.2s;
+      display: none;
+    }
+
+    #stop-btn:hover {
+      background: rgba(255,82,82,0.1);
+      border-color: var(--red);
+      color: var(--red);
+    }
+
+    /* ── Signal pulse animation ── */
+    @keyframes signal-pulse {
+      0%   { transform: scale(1); opacity: 1; }
+      50%  { transform: scale(1.5); opacity: 0.4; }
+      100% { transform: scale(1); opacity: 1; }
+    }
+
+    /* ── Modal ── */
+    #modal-overlay {
+      display: none;
+      position: fixed;
+      inset: 0;
+      background: rgba(0,0,0,0.7);
+      backdrop-filter: blur(4px);
+      z-index: 9999;
+      align-items: center;
+      justify-content: center;
+    }
+
+    #modal-overlay.show {
+      display: flex;
+    }
+
+    #modal {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 20px;
+      padding: 36px 40px;
+      max-width: 400px;
+      width: 90%;
+      text-align: center;
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+    }
+
+    #modal h2 {
+      font-size: 26px;
+      font-weight: 700;
+      color: var(--text);
+    }
+
+    #modal .modal-sub {
+      font-size: 14px;
+      color: var(--muted);
+    }
+
+    .modal-stat {
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 18px;
+    }
+
+    .modal-stat-value {
+      font-size: 40px;
+      font-weight: 800;
+      color: var(--green);
+    }
+
+    .modal-stat-label {
+      font-size: 13px;
+      color: var(--muted);
+      margin-top: 4px;
+    }
+
+    .modal-stats-row {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 10px;
+    }
+
+    #modal-close {
+      padding: 14px;
+      border-radius: 12px;
+      border: none;
+      background: linear-gradient(135deg, var(--accent), var(--green));
+      color: #000;
+      font-size: 15px;
+      font-weight: 700;
+      cursor: pointer;
+      margin-top: 8px;
+    }
+
+    #modal-close:hover { opacity: 0.85; }
+
+    /* Ambulance marker */
+    .ambulance-icon {
+      font-size: 24px;
+      text-shadow: 0 2px 8px rgba(0,0,0,0.5);
+      display: block;
+      transform-origin: center center;
+      transition: transform 0.5s ease;
+    }
+
+    /* Leaflet dark tiles override */
+    .leaflet-container {
+      background: #1a1a2e;
+    }
+  </style>
+</head>
+<body>
+<div id="app">
+
+  <!-- ── Map ── -->
+  <div id="map-container">
+    <div id="map-badge">Times Square → Bellevue Hospital · Manhattan, NYC</div>
+    <div id="map"></div>
+  </div>
+
+  <!-- ── Side Panel ── -->
+  <div id="panel">
+
+    <!-- Logo -->
+    <div class="logo">
+      <div class="logo-icon">🚦</div>
+      <div class="logo-text">
+        <h1>Ahead</h1>
+        <p>Predictive Signal Preemption</p>
+      </div>
+    </div>
+
+    <div class="divider"></div>
+
+    <!-- Route -->
+    <div class="route-info">
+      <div class="route-stop">
+        <div class="stop-dot origin"></div>
+        <div>
+          <div class="stop-label">Origin</div>
+          <div class="stop-name">Times Square</div>
+        </div>
+      </div>
+      <div class="route-connector"></div>
+      <div class="route-stop">
+        <div class="stop-dot dest"></div>
+        <div>
+          <div class="stop-label">Destination</div>
+          <div class="stop-name">Bellevue Hospital</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="divider"></div>
+
+    <!-- Stats -->
+    <div class="stats-grid">
+      <div class="stat-card">
+        <div class="stat-label">Time Saved</div>
+        <div class="stat-value" id="stat-time">0</div>
+        <div class="stat-unit">seconds</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">Signals Cleared</div>
+        <div class="stat-value" id="stat-signals">0</div>
+        <div class="stat-unit">intersections</div>
+      </div>
+    </div>
+
+    <!-- Progress -->
+    <div class="progress-wrap">
+      <div class="progress-header">
+        <div class="progress-title">Route Progress</div>
+        <div class="progress-pct" id="stat-progress">0%</div>
+      </div>
+      <div class="progress-bar">
+        <div class="progress-fill" id="progress-fill"></div>
+      </div>
+    </div>
+
+    <!-- Status -->
+    <div id="status-pill">
+      <div class="status-dot" id="status-dot"></div>
+      <span id="status-text">Ready to dispatch</span>
+    </div>
+
+    <!-- Legend -->
+    <div class="legend">
+      <div class="legend-title">Signal Legend</div>
+      <div class="legend-item">
+        <div class="legend-dot" style="background:#00E676"></div>
+        <div class="legend-item-text">Preempted</div>
+        <div class="legend-item-sub">Green wave active</div>
+      </div>
+      <div class="legend-item">
+        <div class="legend-dot" style="background:#FFEA00"></div>
+        <div class="legend-item-text">Warning</div>
+        <div class="legend-item-sub">Preparing to clear</div>
+      </div>
+      <div class="legend-item">
+        <div class="legend-dot" style="background:#FF5252"></div>
+        <div class="legend-item-text">Normal</div>
+        <div class="legend-item-sub">Standard cycling</div>
+      </div>
+      <div class="legend-item">
+        <div class="legend-dot" style="background:#00B0FF"></div>
+        <div class="legend-item-text">At Location</div>
+        <div class="legend-item-sub">Ambulance passing</div>
+      </div>
+      <div class="legend-item">
+        <div class="legend-dot" style="background:#9E9E9E"></div>
+        <div class="legend-item-text">Passed</div>
+        <div class="legend-item-sub">Returned to normal</div>
+      </div>
+    </div>
+
+    <div style="flex:1"></div>
+
+    <!-- Buttons -->
+    <div style="display:flex;flex-direction:column;gap:8px;">
+      <button id="start-btn" onclick="startDemo()">🚑 Start Demo</button>
+      <button id="stop-btn" onclick="stopDemo()">Stop Simulation</button>
+    </div>
+
+  </div>
+</div>
+
+<!-- ── Completion Modal ── -->
+<div id="modal-overlay">
+  <div id="modal">
+    <div style="font-size:48px">🎉</div>
+    <h2>Mission Complete</h2>
+    <p class="modal-sub">Ambulance arrived at Bellevue Hospital</p>
+    <div class="modal-stats-row">
+      <div class="modal-stat">
+        <div class="modal-stat-value" id="modal-time">—</div>
+        <div class="modal-stat-label">Seconds Saved</div>
+      </div>
+      <div class="modal-stat">
+        <div class="modal-stat-value" id="modal-signals">—</div>
+        <div class="modal-stat-label">Signals Preempted</div>
+      </div>
+    </div>
+    <p class="modal-sub">Ahead's green wave cleared the path 2–3 intersections ahead of the vehicle at all times.</p>
+    <button id="modal-close" onclick="closeModal()">Start Again</button>
+  </div>
+</div>
+
+<script>
+// ── Map setup ──────────────────────────────────────────────────────────────
+
+const map = L.map('map', {
+  center: [40.748, -73.980],
+  zoom: 14,
+  zoomControl: true,
+});
+
+// Dark tile layer
+L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
+  attribution: '© OpenStreetMap contributors © CARTO',
+  subdomains: 'abcd',
+  maxZoom: 19,
+}).addTo(map);
+
+// ── State ──────────────────────────────────────────────────────────────────
+
+let routePolyline = null;
+let ambulanceMarker = null;
+let signalMarkers = {};   // node_id -> L.circleMarker
+let lastTimeSaved = 0;
+let normalCycleStates = {};  // node_id -> bool (true = bright red)
+let simRunning = false;
+
+// Colors per state
+const STATE_COLORS = {
+  green:  '#00E676',
+  yellow: '#FFEA00',
+  normal: '#FF5252',
+  passed: '#9E9E9E',
+  at:     '#00B0FF',
+};
+
+// ── Socket.IO ──────────────────────────────────────────────────────────────
+
+const socket = io('http://localhost:5001', { transports: ['websocket', 'polling'] });
+
+socket.on('connect', () => {
+  console.log('[socket] connected');
+});
+
+socket.on('disconnect', () => {
+  console.log('[socket] disconnected');
+});
+
+socket.on('route_ready', (data) => {
+  console.log('[socket] route_ready', data.route.length, 'waypoints,', data.intersections.length, 'intersections');
+  drawRoute(data.route, data.intersections);
+  setStatus('active', '🟢 Ambulance en route');
+});
+
+socket.on('position_update', (data) => {
+  updateAmbulance(data.ambulance);
+  updateSignals(data.signal_states);
+  updateStats(data.time_saved_s, data.progress_pct);
+});
+
+socket.on('simulation_complete', (data) => {
+  simRunning = false;
+  setStatus('complete', '✓ Arrived at Bellevue');
+  document.getElementById('start-btn').disabled = false;
+  document.getElementById('stop-btn').style.display = 'none';
+  showModal(data.total_time_saved_s, data.intersections_preempted);
+});
+
+// ── Draw route & signals ───────────────────────────────────────────────────
+
+function drawRoute(routeCoords, intersections) {
+  // Clear previous
+  if (routePolyline) { map.removeLayer(routePolyline); }
+  Object.values(signalMarkers).forEach(m => map.removeLayer(m));
+  signalMarkers = {};
+  normalCycleStates = {};
+
+  // Route polyline (blue dashed)
+  const latlngs = routeCoords.map(p => [p.lat, p.lon]);
+  routePolyline = L.polyline(latlngs, {
+    color: '#58a6ff',
+    weight: 3,
+    opacity: 0.7,
+    dashArray: '8, 6',
+  }).addTo(map);
+
+  map.fitBounds(routePolyline.getBounds(), { padding: [40, 40] });
+
+  // Signal markers
+  intersections.forEach(inter => {
+    const marker = L.circleMarker([inter.lat, inter.lon], {
+      radius: 10,
+      color: '#000',
+      weight: 2,
+      fillColor: STATE_COLORS.normal,
+      fillOpacity: 0.9,
+    }).addTo(map);
+    marker.bindTooltip(`Intersection #${inter.index + 1}`, { permanent: false });
+    signalMarkers[inter.node_id] = marker;
+    normalCycleStates[inter.node_id] = true;
+  });
+
+  // Ambulance marker
+  if (ambulanceMarker) { map.removeLayer(ambulanceMarker); }
+  const firstCoord = routeCoords[0];
+  ambulanceMarker = L.marker([firstCoord.lat, firstCoord.lon], {
+    icon: L.divIcon({
+      className: '',
+      html: '<span class="ambulance-icon" id="amb-icon">🚑</span>',
+      iconSize: [32, 32],
+      iconAnchor: [16, 16],
+    }),
+    zIndexOffset: 1000,
+  }).addTo(map);
+}
+
+// ── Update ambulance ───────────────────────────────────────────────────────
+
+function updateAmbulance(amb) {
+  if (!ambulanceMarker) return;
+  ambulanceMarker.setLatLng([amb.lat, amb.lon]);
+  const icon = document.getElementById('amb-icon');
+  if (icon) {
+    icon.style.transform = `rotate(${amb.heading_deg}deg)`;
+  }
+}
+
+// ── Update signals ─────────────────────────────────────────────────────────
+
+function updateSignals(states) {
+  for (const [nodeId, state] of Object.entries(states)) {
+    const marker = signalMarkers[nodeId];
+    if (!marker) continue;
+
+    const color = STATE_COLORS[state] || STATE_COLORS.normal;
+    marker.setStyle({ fillColor: color, fillOpacity: 0.92 });
+
+    // Pulse animation for green
+    const el = marker.getElement();
+    if (el) {
+      if (state === 'green') {
+        el.style.animation = 'signal-pulse 1.2s ease-in-out infinite';
+      } else {
+        el.style.animation = '';
+      }
+    }
+  }
+}
+
+// ── Normal-cycle toggling (frontend) ──────────────────────────────────────
+
+setInterval(() => {
+  for (const [nodeId, marker] of Object.entries(signalMarkers)) {
+    // Only toggle if current state is 'normal'
+    const currentColor = marker.options.fillColor;
+    if (currentColor === STATE_COLORS.normal) {
+      const bright = normalCycleStates[nodeId];
+      marker.setStyle({ fillColor: bright ? '#B71C1C' : '#FF5252' });
+      normalCycleStates[nodeId] = !bright;
+    }
+  }
+}, 5000);
+
+// ── Stats ──────────────────────────────────────────────────────────────────
+
+function updateStats(timeSaved, progressPct) {
+  const timeSavedEl = document.getElementById('stat-time');
+  const signalsEl = document.getElementById('stat-signals');
+
+  // Count preempted signals
+  let preempted = 0;
+  for (const marker of Object.values(signalMarkers)) {
+    const c = marker.options.fillColor;
+    if (c === STATE_COLORS.green || c === STATE_COLORS.at || c === STATE_COLORS.passed) {
+      preempted++;
+    }
+  }
+
+  const rounded = Math.round(timeSaved);
+  timeSavedEl.textContent = rounded;
+  signalsEl.textContent = preempted;
+
+  // Flash green on increment
+  if (rounded > lastTimeSaved) {
+    timeSavedEl.classList.add('flash');
+    setTimeout(() => timeSavedEl.classList.remove('flash'), 600);
+    lastTimeSaved = rounded;
+  }
+
+  // Progress
+  const pct = Math.round(progressPct);
+  document.getElementById('stat-progress').textContent = pct + '%';
+  document.getElementById('progress-fill').style.width = pct + '%';
+}
+
+// ── Status pill ────────────────────────────────────────────────────────────
+
+function setStatus(type, text) {
+  const pill = document.getElementById('status-pill');
+  const dot = document.getElementById('status-dot');
+  const label = document.getElementById('status-text');
+
+  pill.className = 'status-pill';
+  pill.id = 'status-pill';
+  dot.className = 'status-dot';
+
+  if (type === 'active') {
+    pill.classList.add('active');
+    dot.classList.add('pulse');
+  } else if (type === 'complete') {
+    pill.classList.add('complete');
+  }
+
+  label.textContent = text;
+}
+
+// ── Start / Stop ───────────────────────────────────────────────────────────
+
+function startDemo() {
+  if (simRunning) return;
+  simRunning = true;
+
+  // Reset stats
+  lastTimeSaved = 0;
+  document.getElementById('stat-time').textContent = '0';
+  document.getElementById('stat-signals').textContent = '0';
+  document.getElementById('stat-progress').textContent = '0%';
+  document.getElementById('progress-fill').style.width = '0%';
+
+  document.getElementById('start-btn').disabled = true;
+  document.getElementById('stop-btn').style.display = 'block';
+  setStatus('active', '🔄 Computing route…');
+
+  fetch('http://localhost:5001/start', { method: 'POST' })
+    .then(r => r.json())
+    .then(d => console.log('[start]', d))
+    .catch(e => {
+      console.error('[start] error', e);
+      setStatus('', 'Connection error — is the server running?');
+      document.getElementById('start-btn').disabled = false;
+      document.getElementById('stop-btn').style.display = 'none';
+      simRunning = false;
+    });
+}
+
+function stopDemo() {
+  fetch('http://localhost:5001/stop', { method: 'POST' })
+    .then(() => {
+      simRunning = false;
+      setStatus('', 'Stopped');
+      document.getElementById('start-btn').disabled = false;
+      document.getElementById('stop-btn').style.display = 'none';
+    });
+}
+
+// ── Modal ──────────────────────────────────────────────────────────────────
+
+function showModal(timeSaved, signalsPreempted) {
+  document.getElementById('modal-time').textContent = Math.round(timeSaved);
+  document.getElementById('modal-signals').textContent = signalsPreempted;
+  document.getElementById('modal-overlay').classList.add('show');
+}
+
+function closeModal() {
+  document.getElementById('modal-overlay').classList.remove('show');
+  simRunning = false;
+  document.getElementById('start-btn').disabled = false;
+  document.getElementById('stop-btn').style.display = 'none';
+  setStatus('', 'Ready to dispatch');
+}
+</script>
+</body>
+</html>

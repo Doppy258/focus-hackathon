@@ -1,0 +1,9 @@
+flask
+flask-socketio
+eventlet
+osmnx
+networkx
+scikit-learn
+numpy
+pandas
+requests
