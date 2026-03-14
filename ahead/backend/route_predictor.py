@@ -42,7 +42,7 @@ HIGHWAY_PREF = {
 }
 
 # Demo speed-up: ambulance simulation runs 60x real time
-SPEED_MULTIPLIER = 1000.0
+SPEED_MULTIPLIER = 80.0
 MAX_INTERSECTIONS = 12
 
 # Time-of-day speed multipliers keyed by (start_hour, end_hour)

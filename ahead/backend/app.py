@@ -216,10 +216,18 @@ def _simulation_thread(timeline: list, intersections: list, total_demo_s: float)
 # Routes
 # ---------------------------------------------------------------------------
 
+FRONTEND_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "frontend"))
+
+
 @app.route("/")
 def index():
-    frontend_path = os.path.join(os.path.dirname(__file__), "..", "frontend", "index.html")
-    return send_file(os.path.abspath(frontend_path))
+    return send_file(os.path.join(FRONTEND_DIR, "index.html"))
+
+
+@app.route("/<path:filename>")
+def static_frontend(filename):
+    from flask import send_from_directory
+    return send_from_directory(FRONTEND_DIR, filename)
 
 
 @app.route("/start", methods=["POST"])

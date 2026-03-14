@@ -837,14 +837,15 @@ function setStatus(type, text) {
 
 // ── Client-side simulation loop ────────────────────────────────────────────
 
-function runSimulation(timeline, intersections, totalDemoS) {
+function runSimulation(routeCoords, intersections, totalDemoS) {
   const TICK = 500;
   const TIME_SAVED_PER_SIGNAL = 30;
   let timeSaved = 0;
   const preemptedSet = new Set();
   const startTime = performance.now();
 
-  drawRoute(timeline, intersections);
+  // Draw polyline from full route coords; use intersections (which have arrival_s) for timing
+  drawRoute(routeCoords, intersections);
   setStatus('active', '🟢 Ambulance en route');
 
   simTimer = setInterval(() => {
@@ -855,7 +856,7 @@ function runSimulation(timeline, intersections, totalDemoS) {
     }
 
     const elapsed = (performance.now() - startTime) / 1000;
-    const result = interpolatePosition(timeline, elapsed);
+    const result = interpolatePosition(intersections, elapsed);
     if (!result) { clearInterval(simTimer); return; }
 
     const progressPct = Math.min(100, (elapsed / totalDemoS) * 100);
