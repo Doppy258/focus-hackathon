@@ -856,7 +856,7 @@ function runSimulation(routeCoords, intersections, totalDemoS) {
     }
 
     const elapsed = (performance.now() - startTime) / 1000;
-    const result = interpolatePosition(intersections, elapsed);
+    const result = interpolatePosition(routeCoords, elapsed);
     if (!result) { clearInterval(simTimer); return; }
 
     const progressPct = Math.min(100, (elapsed / totalDemoS) * 100);
