@@ -4,10 +4,11 @@ Uses threading async_mode for broad compatibility.
 """
 
 import math
+import os
 import time
 import threading
 
-from flask import Flask, jsonify
+from flask import Flask, jsonify, request, send_file
 from flask_socketio import SocketIO, emit
 
 from route_predictor import (
@@ -24,6 +25,24 @@ from route_predictor import (
 
 app = Flask(__name__)
 app.config["SECRET_KEY"] = "ahead-demo-secret"
+
+# Handle CORS so the frontend (opened as file://) can reach Flask endpoints.
+@app.before_request
+def handle_preflight():
+    if request.method == "OPTIONS":
+        from flask import make_response
+        res = make_response()
+        res.headers["Access-Control-Allow-Origin"] = "*"
+        res.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
+        res.headers["Access-Control-Allow-Headers"] = "Content-Type"
+        return res
+
+@app.after_request
+def add_cors_headers(response):
+    response.headers["Access-Control-Allow-Origin"] = "*"
+    response.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
+    response.headers["Access-Control-Allow-Headers"] = "Content-Type"
+    return response
 
 socketio = SocketIO(
     app,
@@ -196,6 +215,12 @@ def _simulation_thread(timeline: list, intersections: list, total_demo_s: float)
 # ---------------------------------------------------------------------------
 # Routes
 # ---------------------------------------------------------------------------
+
+@app.route("/")
+def index():
+    frontend_path = os.path.join(os.path.dirname(__file__), "..", "frontend", "index.html")
+    return send_file(os.path.abspath(frontend_path))
+
 
 @app.route("/start", methods=["POST"])
 def start_demo():

@@ -7,8 +7,6 @@
 
   <!-- Leaflet CSS -->
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
-  <!-- Socket.IO -->
-  <script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
   <!-- Leaflet JS -->
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 
@@ -386,9 +384,8 @@
 
     /* ── Signal pulse animation ── */
     @keyframes signal-pulse {
-      0%   { transform: scale(1); opacity: 1; }
-      50%  { transform: scale(1.5); opacity: 0.4; }
-      100% { transform: scale(1); opacity: 1; }
+      0%, 100% { opacity: 0.95; }
+      50%       { opacity: 0.25; }
     }
 
     /* ── Modal ── */
@@ -631,7 +628,6 @@ const map = L.map('map', {
   zoomControl: true,
 });
 
-// Dark tile layer
 L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
   attribution: '© OpenStreetMap contributors © CARTO',
   subdomains: 'abcd',
@@ -642,12 +638,14 @@ L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
 
 let routePolyline = null;
 let ambulanceMarker = null;
-let signalMarkers = {};   // node_id -> L.circleMarker
+let signalMarkers = {};
 let lastTimeSaved = 0;
-let normalCycleStates = {};  // node_id -> bool (true = bright red)
+let normalCycleStates = {};
 let simRunning = false;
+let simTimer = null;
 
-// Colors per state
+let routeData = null;
+
 const STATE_COLORS = {
   green:  '#00E676',
   yellow: '#FFEA00',
@@ -656,48 +654,56 @@ const STATE_COLORS = {
   at:     '#00B0FF',
 };
 
-// ── Socket.IO ──────────────────────────────────────────────────────────────
+// ── Load pre-computed route data ───────────────────────────────────────────
 
-const socket = io('http://localhost:5001', { transports: ['websocket', 'polling'] });
+fetch('route-data.json')
+  .then(r => r.json())
+  .then(data => { routeData = data; })
+  .catch(err => console.error('Failed to load route-data.json', err));
 
-socket.on('connect', () => {
-  console.log('[socket] connected');
-});
+// ── Simulation helpers (ported from Python backend) ────────────────────────
 
-socket.on('disconnect', () => {
-  console.log('[socket] disconnected');
-});
+function heading(lat1, lon1, lat2, lon2) {
+  const dlat = lat2 - lat1;
+  const dlon = lon2 - lon1;
+  const angle = Math.atan2(dlon, dlat) * (180 / Math.PI);
+  return (angle + 360) % 360;
+}
 
-socket.on('route_ready', (data) => {
-  console.log('[socket] route_ready', data.route.length, 'waypoints,', data.intersections.length, 'intersections');
-  drawRoute(data.route, data.intersections);
-  setStatus('active', '🟢 Ambulance en route');
-});
+function interpolatePosition(timeline, elapsedS) {
+  if (!timeline || timeline.length === 0) return null;
 
-socket.on('position_update', (data) => {
-  updateAmbulance(data.ambulance);
-  updateSignals(data.signal_states);
-  updateStats(data.time_saved_s, data.progress_pct);
-});
+  for (let i = 0; i < timeline.length - 1; i++) {
+    const t0 = timeline[i].arrival_s;
+    const t1 = timeline[i + 1].arrival_s;
+    if (t0 <= elapsedS && elapsedS <= t1) {
+      const frac = (t1 - t0) > 0 ? (elapsedS - t0) / (t1 - t0) : 0;
+      const lat = timeline[i].lat + frac * (timeline[i + 1].lat - timeline[i].lat);
+      const lon = timeline[i].lon + frac * (timeline[i + 1].lon - timeline[i].lon);
+      const hdg = heading(timeline[i].lat, timeline[i].lon, timeline[i + 1].lat, timeline[i + 1].lon);
+      return { lat, lon, heading: hdg, nodeIdx: i };
+    }
+  }
+  const last = timeline[timeline.length - 1];
+  return { lat: last.lat, lon: last.lon, heading: 0, nodeIdx: timeline.length - 1 };
+}
 
-socket.on('simulation_complete', (data) => {
-  simRunning = false;
-  setStatus('complete', '✓ Arrived at Bellevue');
-  document.getElementById('start-btn').disabled = false;
-  document.getElementById('stop-btn').style.display = 'none';
-  showModal(data.total_time_saved_s, data.intersections_preempted);
-});
+function currentIntersectionIndex(intersections, elapsedS) {
+  let idx = -1;
+  for (let i = 0; i < intersections.length; i++) {
+    if (intersections[i].arrival_s <= elapsedS) idx = i;
+  }
+  return idx;
+}
 
 // ── Draw route & signals ───────────────────────────────────────────────────
 
 function drawRoute(routeCoords, intersections) {
-  // Clear previous
   if (routePolyline) { map.removeLayer(routePolyline); }
   Object.values(signalMarkers).forEach(m => map.removeLayer(m));
   signalMarkers = {};
   normalCycleStates = {};
 
-  // Route polyline (blue dashed)
   const latlngs = routeCoords.map(p => [p.lat, p.lon]);
   routePolyline = L.polyline(latlngs, {
     color: '#58a6ff',
@@ -708,7 +714,6 @@ function drawRoute(routeCoords, intersections) {
 
   map.fitBounds(routePolyline.getBounds(), { padding: [40, 40] });
 
-  // Signal markers
   intersections.forEach(inter => {
     const marker = L.circleMarker([inter.lat, inter.lon], {
       radius: 10,
@@ -722,7 +727,6 @@ function drawRoute(routeCoords, intersections) {
     normalCycleStates[inter.node_id] = true;
   });
 
-  // Ambulance marker
   if (ambulanceMarker) { map.removeLayer(ambulanceMarker); }
   const firstCoord = routeCoords[0];
   ambulanceMarker = L.marker([firstCoord.lat, firstCoord.lon], {
@@ -743,7 +747,7 @@ function updateAmbulance(amb) {
   ambulanceMarker.setLatLng([amb.lat, amb.lon]);
   const icon = document.getElementById('amb-icon');
   if (icon) {
-    icon.style.transform = `rotate(${amb.heading_deg}deg)`;
+    icon.style.transform = `rotate(${amb.heading}deg)`;
   }
 }
 
@@ -757,7 +761,6 @@ function updateSignals(states) {
     const color = STATE_COLORS[state] || STATE_COLORS.normal;
     marker.setStyle({ fillColor: color, fillOpacity: 0.92 });
 
-    // Pulse animation for green
     const el = marker.getElement();
     if (el) {
       if (state === 'green') {
@@ -773,9 +776,8 @@ function updateSignals(states) {
 
 setInterval(() => {
   for (const [nodeId, marker] of Object.entries(signalMarkers)) {
-    // Only toggle if current state is 'normal'
     const currentColor = marker.options.fillColor;
-    if (currentColor === STATE_COLORS.normal) {
+    if (currentColor === STATE_COLORS.normal || currentColor === '#B71C1C') {
       const bright = normalCycleStates[nodeId];
       marker.setStyle({ fillColor: bright ? '#B71C1C' : '#FF5252' });
       normalCycleStates[nodeId] = !bright;
@@ -789,7 +791,6 @@ function updateStats(timeSaved, progressPct) {
   const timeSavedEl = document.getElementById('stat-time');
   const signalsEl = document.getElementById('stat-signals');
 
-  // Count preempted signals
   let preempted = 0;
   for (const marker of Object.values(signalMarkers)) {
     const c = marker.options.fillColor;
@@ -802,14 +803,12 @@ function updateStats(timeSaved, progressPct) {
   timeSavedEl.textContent = rounded;
   signalsEl.textContent = preempted;
 
-  // Flash green on increment
   if (rounded > lastTimeSaved) {
     timeSavedEl.classList.add('flash');
     setTimeout(() => timeSavedEl.classList.remove('flash'), 600);
     lastTimeSaved = rounded;
   }
 
-  // Progress
   const pct = Math.round(progressPct);
   document.getElementById('stat-progress').textContent = pct + '%';
   document.getElementById('progress-fill').style.width = pct + '%';
@@ -822,7 +821,7 @@ function setStatus(type, text) {
   const dot = document.getElementById('status-dot');
   const label = document.getElementById('status-text');
 
-  pill.className = 'status-pill';
+  pill.className = '';
   pill.id = 'status-pill';
   dot.className = 'status-dot';
 
@@ -836,13 +835,76 @@ function setStatus(type, text) {
   label.textContent = text;
 }
 
+// ── Client-side simulation loop ────────────────────────────────────────────
+
+function runSimulation(timeline, intersections, totalDemoS) {
+  const TICK = 500;
+  const TIME_SAVED_PER_SIGNAL = 30;
+  let timeSaved = 0;
+  const preemptedSet = new Set();
+  const startTime = performance.now();
+
+  drawRoute(timeline, intersections);
+  setStatus('active', '🟢 Ambulance en route');
+
+  simTimer = setInterval(() => {
+    if (!simRunning) {
+      clearInterval(simTimer);
+      simTimer = null;
+      return;
+    }
+
+    const elapsed = (performance.now() - startTime) / 1000;
+    const result = interpolatePosition(timeline, elapsed);
+    if (!result) { clearInterval(simTimer); return; }
+
+    const progressPct = Math.min(100, (elapsed / totalDemoS) * 100);
+    const ambIdx = currentIntersectionIndex(intersections, elapsed);
+
+    const signalStates = {};
+    for (let i = 0; i < intersections.length; i++) {
+      const nodeId = intersections[i].node_id;
+      const delta = i - ambIdx;
+      let state;
+      if (delta > 3)       state = 'normal';
+      else if (delta === 3) state = 'yellow';
+      else if (delta >= 1)  state = 'green';
+      else if (delta === 0) state = 'at';
+      else                  state = 'passed';
+
+      if ((state === 'green' || state === 'at') && !preemptedSet.has(nodeId)) {
+        preemptedSet.add(nodeId);
+        timeSaved += TIME_SAVED_PER_SIGNAL;
+      }
+      signalStates[nodeId] = state;
+    }
+
+    updateAmbulance(result);
+    updateSignals(signalStates);
+    updateStats(timeSaved, progressPct);
+
+    if (elapsed >= totalDemoS) {
+      clearInterval(simTimer);
+      simTimer = null;
+      simRunning = false;
+      setStatus('complete', '✓ Arrived at Bellevue');
+      document.getElementById('start-btn').disabled = false;
+      document.getElementById('stop-btn').style.display = 'none';
+      showModal(timeSaved, preemptedSet.size);
+    }
+  }, TICK);
+}
+
 // ── Start / Stop ───────────────────────────────────────────────────────────
 
 function startDemo() {
   if (simRunning) return;
+  if (!routeData) {
+    setStatus('', 'Route data not loaded yet — try again.');
+    return;
+  }
   simRunning = true;
 
-  // Reset stats
   lastTimeSaved = 0;
   document.getElementById('stat-time').textContent = '0';
   document.getElementById('stat-signals').textContent = '0';
@@ -851,28 +913,16 @@ function startDemo() {
 
   document.getElementById('start-btn').disabled = true;
   document.getElementById('stop-btn').style.display = 'block';
-  setStatus('active', '🔄 Computing route…');
 
-  fetch('http://localhost:5001/start', { method: 'POST' })
-    .then(r => r.json())
-    .then(d => console.log('[start]', d))
-    .catch(e => {
-      console.error('[start] error', e);
-      setStatus('', 'Connection error — is the server running?');
-      document.getElementById('start-btn').disabled = false;
-      document.getElementById('stop-btn').style.display = 'none';
-      simRunning = false;
-    });
+  runSimulation(routeData.route, routeData.intersections, routeData.estimated_total_time_s);
 }
 
 function stopDemo() {
-  fetch('http://localhost:5001/stop', { method: 'POST' })
-    .then(() => {
-      simRunning = false;
-      setStatus('', 'Stopped');
-      document.getElementById('start-btn').disabled = false;
-      document.getElementById('stop-btn').style.display = 'none';
-    });
+  simRunning = false;
+  if (simTimer) { clearInterval(simTimer); simTimer = null; }
+  setStatus('', 'Stopped');
+  document.getElementById('start-btn').disabled = false;
+  document.getElementById('stop-btn').style.display = 'none';
 }
 
 // ── Modal ──────────────────────────────────────────────────────────────────
